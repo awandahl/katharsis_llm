@@ -1,0 +1,32 @@
+. ~/venv/bin/activate
+python -c "
+import duckdb
+con = duckdb.connect('kth_metadata.duckdb')
+
+con.execute(\"\"\"
+CREATE TABLE IF NOT EXISTS orcid_usage_summary AS
+SELECT
+  orcid,
+
+  COUNT(*)                             AS n_authorships,
+  COUNT(DISTINCT pid)                  AS n_publications,
+
+  -- all distinct name forms seen with this ORCID
+  LIST(DISTINCT family_name)           AS family_names,
+  LIST(DISTINCT given_name)            AS given_names,
+
+  -- all distinct KTH person IDs linked to this ORCID
+  LIST(DISTINCT kth_author_id)         AS kth_author_ids,
+
+  -- all distinct org_ids and subjects
+  LIST(DISTINCT org_id)                AS org_ids,
+  LIST(DISTINCT hsv_code)              AS hsv_codes,
+  LIST(DISTINCT subject_topic)         AS subject_topics
+
+FROM author_orcid_candidates
+WHERE orcid IS NOT NULL AND orcid <> ''
+GROUP BY orcid
+\"\"\")
+
+print(con.execute('SELECT * FROM orcid_usage_summary LIMIT 5').fetchall())
+"
