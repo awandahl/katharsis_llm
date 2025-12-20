@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import json
 import duckdb
 import requests
@@ -32,9 +33,12 @@ df = con.execute("""
 for _, row in df.iterrows():
     rec = row.to_dict()
 
-    diva_name = f\"{rec['family_name']}, {rec['given_name']}\" if rec['family_name'] else rec['given_name']
+    if rec["family_name"]:
+        diva_name = f"{rec['family_name']}, {rec['given_name']}"
+    else:
+        diva_name = rec["given_name"]
 
-    prompt = f\"\"\"You are helping a university library check metadata quality for authors and ORCID iDs.
+    prompt = f"""You are helping a university library check metadata quality for authors and ORCID iDs.
 
 Publication:
 - PID: {rec['pid']}
@@ -61,7 +65,7 @@ Task:
   "reason": "1–3 sentence explanation"
 }}
 Do not add any other text.
-\"\"\"  # noqa: E501
+"""
 
     resp = requests.post(
         "http://127.0.0.1:11434/api/generate",
@@ -73,5 +77,5 @@ Do not add any other text.
 
     obj = json.loads(answer.splitlines()[0])
 
-    print(f"PID {rec['pid']} | {diva_name} | ORCID {rec['orcid']}")
+    print(f"\nPID {rec['pid']} | {diva_name} | ORCID {rec['orcid']}")
     print(obj)
