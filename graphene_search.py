@@ -2,23 +2,24 @@
 import duckdb
 import requests
 import json
+import re
 
-# --- CONFIGURE THESE -------------------------------------------------
-DB_PATH = "kth_metadata.duckdb"   # path to your DuckDB file
-MODEL = "llama3.2:1b"            # or whatever model name you're running in Ollama
+# --- CONFIG ----------------------------------------------------------
+DB_PATH = "kth_metadata.duckdb"
+MODEL = "llama3.1:8b"            # adjust if you switch model
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-MAX_CANDIDATES = 200             # how many rows to pull from DuckDB before re-ranking
-TOP_N = 20                       # how many top results to print
+
+MAX_CANDIDATES = 200
+TOP_N = 20
+BATCH_SIZE = 25                  # LLM scoring batch size
 # ---------------------------------------------------------------------
 
 
 def get_duckdb_connection():
-    con = duckdb.connect(DB_PATH)
-    return con
+    return duckdb.connect(DB_PATH)
 
 
 def fetch_candidates(con):
-    # Static, robust graphene filter using LIKE (DuckDB LIKE is case-insensitive for ASCII).[web:246][web:254]
     where_clause = """
     (
         Title    LIKE '%graphene%' OR
@@ -47,22 +48,16 @@ def fetch_candidates(con):
     WHERE {where_clause}
     LIMIT {MAX_CANDIDATES}
     """
-
-    df = con.execute(query).fetch_df()  # pandas DataFrame[web:253][web:259]
+    df = con.execute(query).fetch_df()
     return df
 
 
-def score_with_llm(items):
+def score_batch_with_llm(batch):
     """
-    items: list of dicts with pid, year, title, abstract, keywords.
-    Returns list of dicts: {pid, relevance, short_reason}.
+    One batch -> LLM. Returns list[dict] OR raises ValueError if output is not pure JSON array.
     """
 
-    payload = {
-        "model": MODEL,
-        "prompt": json.dumps(
-            {
-                "instructions": """
+    instruction = """
 You are ranking KTH publications by how centrally they concern graphene.
 
 For each item, assign:
@@ -73,17 +68,20 @@ For each item, assign:
   - 3 = graphene is a main or central focus
 - short_reason: one short sentence explaining why.
 
-Respond ONLY as a JSON array (no extra text), one object per input item, in the same order:
+You will receive a JSON array under the key "items".
+Respond ONLY with a JSON array, in the same order as the input, in this shape:
 [
-  {"pid": ..., "relevance": ..., "short_reason": "..."},
+  {"pid": 123, "relevance": 3, "short_reason": "..." },
   ...
 ]
-""",
-                "items": items,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+Do NOT add any text before or after the JSON.
+"""
+
+    prompt_text = instruction + "\n\nitems:\n" + json.dumps(batch, ensure_ascii=False, indent=2)
+
+    payload = {
+        "model": MODEL,
+        "prompt": prompt_text,
         "stream": False,
     }
 
@@ -91,14 +89,70 @@ Respond ONLY as a JSON array (no extra text), one object per input item, in the 
     resp.raise_for_status()
     text = resp.json()["response"].strip()
 
-    # Extract JSON array from any wrapping text
-    start = text.find("[")
-    end = text.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("Could not parse JSON array from LLM response:\n" + text)
+    # Strict: must start with '[' and end with ']'
+    stripped = text.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        raise ValueError("LLM did not return pure JSON array:\n" + text)
 
-    data = json.loads(text[start : end + 1])
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        raise ValueError("Could not parse JSON array from LLM response:\n" + stripped) from e
+
     return data
+
+
+def score_with_llm_batched(items):
+    all_scores = []
+    for i in range(0, len(items), BATCH_SIZE):
+        batch = items[i : i + BATCH_SIZE]
+        scores = score_batch_with_llm(batch)
+        all_scores.extend(scores)
+    return all_scores
+
+
+# --- Fallback heuristic if LLM fails completely ----------------------
+
+
+GRAPHENE_TERMS = [
+    "graphene",
+    "graphene oxide",
+    "graphene nanocomposite",
+    "2d material",
+    "two-dimensional material",
+]
+
+
+def heuristic_relevance(rec):
+    """
+    rec: dict with title, abstract, keywords.
+    Returns integer 0–3 based on simple term counting and locations.
+    """
+    title = (rec.get("title") or "").lower()
+    abstract = (rec.get("abstract") or "").lower()
+    keywords = (rec.get("keywords") or "").lower()
+
+    text = " ".join([title, abstract, keywords])
+
+    score = 0
+    # term counts
+    hits = sum(text.count(t) for t in GRAPHENE_TERMS)
+
+    if hits == 0:
+        return 0
+
+    score += min(hits, 3)  # cap
+
+    # bonus if in title
+    if any(t in title for t in GRAPHENE_TERMS):
+        score += 1
+
+    # clamp 0–3
+    if score > 3:
+        score = 3
+    if score < 0:
+        score = 0
+    return score
 
 
 def main():
@@ -114,39 +168,65 @@ def main():
 
     candidates = df.to_dict(orient="records")
 
-    # Prepare items to send to LLM
     llm_items = [
         {
             "pid": int(r["PID"]),
             "year": int(r["Year"]) if r["Year"] is not None else None,
             "title": r["Title"] or "",
-            "abstract": (r["Abstract"] or "")[:2000],  # truncate if very long
+            "abstract": (r["Abstract"] or "")[:2000],
             "keywords": r["Keywords"] or "",
         }
         for r in candidates
     ]
 
-    print("Scoring candidates with LLM for graphene relevance...")
-    scores = score_with_llm(llm_items)
+    use_llm = True
+    scores = None
 
-    # Index scores by pid
-    score_by_pid = {s["pid"]: s for s in scores}
+    print("Scoring candidates with LLM for graphene relevance...")
+    try:
+        scores = score_with_llm_batched(llm_items)
+        print("LLM scoring succeeded.")
+    except Exception as e:
+        print("LLM scoring failed, falling back to heuristic scoring.")
+        print("Reason:", repr(e))
+        use_llm = False
+
+    score_by_pid = {}
+    if use_llm and scores:
+        for s in scores:
+            pid = int(s.get("pid"))
+            score_by_pid[pid] = {
+                "relevance": int(s.get("relevance", 0)),
+                "short_reason": s.get("short_reason", ""),
+            }
 
     enriched = []
     for r in candidates:
         pid = int(r["PID"])
-        s = score_by_pid.get(pid, {"relevance": 0, "short_reason": "no score"})
+        if use_llm and pid in score_by_pid:
+            rel = score_by_pid[pid]["relevance"]
+            reason = score_by_pid[pid]["short_reason"]
+        else:
+            # fallback heuristic
+            rel = heuristic_relevance(
+                {
+                    "title": r["Title"],
+                    "abstract": r["Abstract"],
+                    "keywords": r["Keywords"],
+                }
+            )
+            reason = "heuristic term-based relevance"
+
         enriched.append(
             {
-                "relevance": int(s.get("relevance", 0)),
+                "relevance": rel,
                 "pid": pid,
                 "year": r["Year"],
                 "title": r["Title"],
-                "reason": s.get("short_reason", ""),
+                "reason": reason,
             }
         )
 
-    # Sort by relevance (desc), then by year (desc), then PID
     enriched.sort(key=lambda x: (x["relevance"], x["year"] or 0, x["pid"]), reverse=True)
 
     print(f"\nTop {min(TOP_N, len(enriched))} graphene-related hits:\n")
