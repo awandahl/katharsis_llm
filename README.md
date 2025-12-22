@@ -97,12 +97,12 @@ systemctl status ollama
 ```
 
 
-## 7. Pull a small open model that fits 4 GB RAM
+## 7. Pull a small open model that fits 8 GB RAM
 
-On 4 GB RAM, use a small Llama 3.2 variant:
+On 8 GB RAM, use a small Llama 3.1 variant:
 
 ```bash
-ollama pull llama3.2:1b
+ollama pull llama3.1:8b
 ```
 
 Test interactively:
@@ -112,7 +112,7 @@ ollama run llama3.2:1b
 # type a short question, Ctrl+D to exit
 ```
 
-The 1B variant is designed for constrained environments and runs on low RAM systems.[^10][^11]
+The 8B variant is designed for constrained environments and runs on low RAM systems.[^10][^11]
 
 If you previously pulled a larger model (e.g. `mistral`) and want to free space:
 
@@ -122,7 +122,7 @@ ollama rm mistral
 ```
 
 
-## 8. Test DuckDB → Llama 3.2:1b integration
+## 8. Test DuckDB → Llama 3.1:8b integration
 
 Create `/root/kth_llama_pub.py`:
 
