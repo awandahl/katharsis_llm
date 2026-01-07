@@ -97,18 +97,18 @@ systemctl status ollama
 ```
 
 
-## 7. Pull a small open model that fits 8 GB RAM
+## 7. Pull a open model that fits 64 GB RAM
 
-On 8 GB RAM, use a small Llama 3.1 variant:
+On 64 GB RAM:
 
 ```bash
-ollama pull llama3.1:8b
+ollama pull llama3:8b
 ```
 
 Test interactively:
 
 ```bash
-ollama run llama3.2:1b
+ollama run llama3:8b
 # type a short question, Ctrl+D to exit
 ```
 
