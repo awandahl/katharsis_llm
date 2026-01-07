@@ -22,11 +22,11 @@ Create `extract_conference_series.py` on your laptop:
 import gzip
 import csv
 import re
+from urllib.parse import urlparse
 
 NT_PATH = "dblp.nt.gz"
 OUT_CSV = "dblp_conference_series.csv"
 
-# N-Triples line pattern: <subject> <predicate> <object> .
 TYPE_PRED = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>"
 CONF_OBJ = "<https://dblp.org/rdf/schema#Conference>"
 LABEL_PRED = "<http://www.w3.org/2000/01/rdf-schema#label>"
@@ -34,11 +34,14 @@ LABEL_PRED = "<http://www.w3.org/2000/01/rdf-schema#label>"
 uri_re = re.compile(r"^<([^>]+)>\s+<([^>]+)>\s+(.*)\s\.\s*$")
 
 
-def main():
-    # Two-pass streaming:
-    # 1) Collect all subjects that are Conferences.
-    # 2) Collect labels for those subjects.
+def iri_to_slug(iri: str) -> str:
+    # Example: https://dblp.org/streams/conf/aaai -> "aaai"
+    path = urlparse(iri).path  # "/streams/conf/aaai"
+    parts = [p for p in path.split("/") if p]
+    return parts[-1] if parts else ""
 
+
+def main():
     conference_subjects = set()
 
     # Pass 1: find all conference series IRIs
@@ -48,7 +51,7 @@ def main():
                 m = uri_re.match(line)
                 if not m:
                     continue
-                subj = m.group(1)  # subject URI
+                subj = m.group(1)
                 conference_subjects.add(subj)
 
     print(f"Found {len(conference_subjects)} conference series")
@@ -58,7 +61,7 @@ def main():
          open(OUT_CSV, "w", newline="", encoding="utf-8") as out_f:
 
         writer = csv.writer(out_f, delimiter=";")
-        writer.writerow(["stream_iri", "series_name"])
+        writer.writerow(["series_slug", "stream_iri", "series_name"])
 
         for line in f:
             if LABEL_PRED not in line:
@@ -72,23 +75,24 @@ def main():
             if subj not in conference_subjects:
                 continue
 
-            obj = m.group(3)  # label literal, e.g. "International Conference on X"@en
+            obj = m.group(3)
             if not obj.startswith('"'):
                 continue
 
-            # crude literal parsing: strip leading/trailing quote and optional @lang
             parts = obj.split('"')
             if len(parts) < 3:
                 continue
             label = parts[1]
 
-            writer.writerow([subj, label])
+            slug = iri_to_slug(subj)
+            writer.writerow([slug, subj, label])
 
     print(f"Wrote conference series labels to {OUT_CSV}")
 
 
 if __name__ == "__main__":
     main()
+
 ```
 
 What this does:
@@ -117,8 +121,16 @@ Once you have `dblp_conference_series.csv`:
 - On the VM, in DuckDB:
 
 ```sql
+DROP TABLE IF EXISTS dblp_conference_series;
+
 CREATE TABLE dblp_conference_series AS
-SELECT * FROM read_csv_auto('dblp_conference_series.csv', delim=';');
+SELECT *
+FROM read_csv_auto(
+  'dblp_conference_series.csv',
+  delim = ';',
+  header = true
+);
+
 ```
 
 You now have:
