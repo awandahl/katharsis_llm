@@ -910,8 +910,68 @@ def parse_with_llm(conf_string: str, show_stream: bool = True):
     if conf_string in _llm_cache:
         return _llm_cache[conf_string].copy()
 
-    instruction = """<your existing long instruction block unchanged>"""
+instruction = """
+You are cleaning conference metadata.
 
+You will receive a single raw conference string like:
+"38th Annual ACM Symposium on User Interface Software and Technology, UIST 2025, Busan, Korea, September 28 - October 1, 2025"
+
+Important notes about conference names and years:
+- Some conference names legitimately include a year or acronym+year as part of the name, for example:
+  - "ATTCE 2001-Automotive and Transport Technology Congress and Exhibition"
+  - "European Congress on Computational Methods in Applied Sciences and Engineering, ECCOMAS 2004"
+  - "AMIF 2002, Applied Mathematics for Industrial Flow Problems, Third International Conference"
+  - "International Conference on Fatigue Crack Path (FCP 2003)"
+- In these cases, the year and acronym belong to the conference NAME and must stay inside conf_name.
+- If there is no other explicit date information (no clear date range), this year is a good candidate for both the begin and end year.
+
+For conf_name:
+- Preserve acronyms in uppercase EXACTLY as they appear in the raw string (e.g. AIAA, IEEE, IFAC, EMAS, ATTCE).
+- Normalize capitalization in a title-like style for the rest of the words:
+  - Capitalize main words.
+  - Keep small connector words (and, of, on, in, for, to, the, a, an, at, by, with) lowercase,
+    except when they are the first word or follow a colon.
+
+For conf_place:
+- Normalize capitalization (no ALL-CAPS; use "Strasbourg, France" not "STRASBOURG, FRANCE").
+- When it is obvious, use the correct local spelling with diacritics for city names, for example:
+  - "Jyvaskyla" -> "Jyväskylä"
+  - "Goteborg" -> "Göteborg"
+  - "Malmo" -> "Malmö"
+- Only add diacritics when you are confident they are correct; otherwise keep a safe ASCII form.
+
+For dates, ALWAYS normalize conf_dates into an ISO-like format:
+- If a full range is available:
+  - conf_dates: "YYYY-MM-DD / YYYY-MM-DD"
+    Example: "APR 27-29, 2004" -> "2004-04-27 / 2004-04-29"
+- If only a single day is known:
+  - conf_dates: "YYYY-MM-DD"
+- If only month and year are known (no specific days):
+  - conf_dates: "YYYY-MM / YYYY-MM"  (do NOT invent days)
+- If a year appears only as part of the conference name or acronym (e.g. "TMCE 2004", "EMAS 2002"), and there is no explicit month in the date part:
+  - **Do NOT guess a month.**
+  - conf_dates: "YYYY / YYYY"
+- If only a year is known:
+  - conf_dates: "YYYY / YYYY"
+- Use 4-digit years and 2-digit months and days where possible.
+Do NOT invent specific months or days when only a year is mentioned.
+
+Extract:
+- conf_name: the full conference name and series, including any acronym and year that are part of the name, with normalized capitalization.
+- conf_place: city/region + country (if present), with normalized capitalization and, when obvious, correct local diacritics.
+- conf_dates: a single normalized string in one of the ISO-like formats described above (or empty string if no date is available).
+- note: a very short explanation of how you interpreted the string (max 20 words).
+
+If something is missing or cannot be inferred, use an empty string for conf_dates.
+
+Respond ONLY as a single JSON object, for example:
+{
+  "conf_name": "...",
+  "conf_place": "...",
+  "conf_dates": "2004-04-27 / 2004-04-29",
+  "note": "..."
+}
+"""
     prompt = instruction + f"\n\nRaw conference string:\n{conf_string}\n\nJSON:"
 
     text = stream_llm_json(prompt, show_stream=show_stream)
